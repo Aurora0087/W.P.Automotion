@@ -26,10 +26,10 @@ void OnDataRecv(uint8_t * mac, uint8_t *incomingData, uint8_t len) {
   // Control the pump based on the received ID
   if (myData.id == 1) {  // Turn ON pump
     Serial.println("Turning ON pump");
-    digitalWrite(PUMP_PIN, HIGH);  // Or whatever logic turns your pump on (active high)
+    digitalWrite(PUMP_PIN, LOW);  // Or whatever logic turns your pump on (active high)
   } else if (myData.id == 2) {  // Turn OFF pump
     Serial.println("Turning OFF pump");
-    digitalWrite(PUMP_PIN, LOW);   // Or whatever logic turns your pump off (active low)
+    digitalWrite(PUMP_PIN, HIGH);   // Or whatever logic turns your pump off (active low)
   }
 }
 
@@ -40,7 +40,7 @@ void setup() {
 
   // Set the pump pin as an output
   pinMode(PUMP_PIN, OUTPUT);
-  digitalWrite(PUMP_PIN, LOW); // Ensure the pump is initially off
+  digitalWrite(PUMP_PIN, HIGH); // Ensure the pump is initially off
 
   // Set ESP8266 as a Wi-Fi Station
   WiFi.mode(WIFI_STA);

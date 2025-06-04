@@ -9,16 +9,24 @@
 // Define the LED pin
 #define LED_PIN 16  // Example: GPIO16 (D0 on some NodeMCU boards)
 
+// Define the button pin
+#define OVERRIDE_BUTTON_PIN 0  // D3 on many NodeMCU boards (GPIO0)  **IMPORTANT: Requires Pull-Up Resistor**
+// Define the button pin (for Manual ON/OFF)
+#define MANUAL_ON_OFF_BUTTON_PIN 14  // D5 on many NodeMCU boards (GPIO14) **IMPORTANT: Requires Pull-Up Resistor**
+
+#define OVERRIDE_LED_PIN 12
+#define MANUAL_ON_OFF_LED_PIN 13
+
 // Define the speed of sound in cm/us (microseconds)
 #define SOUND_SPEED 0.034
 
 // Define a timeout for the ultrasonic sensor
-#define MAX_DISTANCE 400  // Maximum distance in cm we want to measure
+#define MAX_DISTANCE 450  // Maximum distance in cm we want to measure
 #define TIMEOUT 30000     // Timeout in microseconds (30 ms, corresponds to ~510cm)
 
 // Pump on of trigger
-#define WATER_DISTANCE_TURN_ON_PUMP 65
-#define WATER_DISTANCE_TURN_OFF_PUMP 10
+#define WATER_DISTANCE_TURN_ON_PUMP 70
+#define WATER_DISTANCE_TURN_OFF_PUMP 25
 
 // Structure to send data
 typedef struct struct_message {
@@ -56,7 +64,6 @@ float measureDistance() {
     return MAX_DISTANCE;  // Or some other error value
   }
 
-
   // Calculate the distance in centimeters
   float distance = (duration * SOUND_SPEED) / 2;
 
@@ -68,6 +75,10 @@ float measureDistance() {
   return distance;
 }
 
+// Global variable to track the button state
+bool pumpManuallyOverridden = false;  // Start with automatic control
+bool pumpManuallyOn = false;          // Manual pump ON/OFF state, default OFF
+
 void setup() {
   // Initialize serial communication
   Serial.begin(115200);
@@ -76,6 +87,11 @@ void setup() {
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
   pinMode(LED_PIN, OUTPUT);
+  pinMode(OVERRIDE_BUTTON_PIN, INPUT_PULLUP);       // Enable internal pull-up resistor
+  pinMode(MANUAL_ON_OFF_BUTTON_PIN, INPUT_PULLUP);  //Enable pull up button
+
+  pinMode(OVERRIDE_LED_PIN, OUTPUT);
+  pinMode(MANUAL_ON_OFF_LED_PIN, OUTPUT);
 
   Serial.println("Ultrasonic Sensor Test");
 
@@ -103,11 +119,55 @@ void setup() {
   esp_now_register_send_cb(OnDataSent);
 }
 
-int maxDistanceCount = 0;  // Counter for consecutive MAX_DISTANCE readings
+int maxDistanceCount = 0;                       // Counter for consecutive MAX_DISTANCE readings
+unsigned long lastOverrideButtonPressTime = 0;  // To debounce the override button
+unsigned long lastManualButtonPressTime = 0;    // To debounce the on/off button
+const unsigned long DEBOUNCE_DELAY = 50;        // Milliseconds
 
 void loop() {
   // Measure the distance
   float distance = measureDistance();
+
+  // Read the Override button state
+  int overrideButtonState = digitalRead(OVERRIDE_BUTTON_PIN);
+
+  // Read the ON/OFF button state
+  int manualOnOffButtonState = digitalRead(MANUAL_ON_OFF_BUTTON_PIN);
+
+  // Check for button press (debounce)
+  if (overrideButtonState == LOW && (millis() - lastOverrideButtonPressTime > DEBOUNCE_DELAY)) {
+
+    pumpManuallyOverridden = !pumpManuallyOverridden;  // Toggle the override state
+    lastOverrideButtonPressTime = millis();
+
+    Serial.print("Pump Override: ");
+    if (pumpManuallyOverridden) {
+      digitalWrite(OVERRIDE_LED_PIN, HIGH);  // Turn LED on for override state
+      Serial.println("ON");
+      delay(1500);
+    } else {
+      digitalWrite(OVERRIDE_LED_PIN, LOW);  // Turn LED off for override state
+      Serial.println("OFF");
+      delay(1500);
+    }
+  }
+
+
+  // Check for Manual ON/OFF button press (debounce)
+  if (manualOnOffButtonState == LOW && (millis() - lastManualButtonPressTime > DEBOUNCE_DELAY)) {
+
+    pumpManuallyOn = !pumpManuallyOn;  // Toggle the manual on/off state
+    lastManualButtonPressTime = millis();
+
+    Serial.print("Pump Manual ON/OFF: ");
+    if (pumpManuallyOn) {
+      digitalWrite(MANUAL_ON_OFF_LED_PIN, HIGH);  // Turn LED on for override state
+      Serial.println("ON");
+    } else {
+      digitalWrite(MANUAL_ON_OFF_LED_PIN, LOW);  // Turn LED off for override state
+      Serial.println("OFF");
+    }
+  }
 
   // Print the distance to the serial monitor
   Serial.print("Distance: ");
@@ -118,11 +178,14 @@ void loop() {
   digitalWrite(LED_PIN, HIGH);  // Turn LED on
 
   if (distance == MAX_DISTANCE) {
-    delay(1000);
+    delay(250);
     digitalWrite(LED_PIN, LOW);  // Turn LED off
+    delay(250);
+    digitalWrite(LED_PIN, HIGH);
+    delay(250);
+    digitalWrite(LED_PIN, LOW); 
     delay(1000);
-    maxDistanceCount++; // Increment counter
-
+    maxDistanceCount++;  // Increment counter
   } else {
     maxDistanceCount = 0;  // Reset counter if distance is not MAX_DISTANCE
   }
@@ -130,45 +193,40 @@ void loop() {
   // Check if we've seen MAX_DISTANCE enough times in a row
   if (maxDistanceCount >= 5) {
     Serial.println("MAX_DISTANCE reached 5 times in a row. Turning OFF pump.");
-    // Send a message to another esp8266(mac address: 48:3F:DA:47:C4:28) using esp now that going to turn off pump after residing that message
-    myData.id = 2;  // ID to identify the message
-    myData.msg = "Turn OFF pump";
-    uint8_t result = esp_now_send(broadcastAddress, (uint8_t *)&myData, sizeof(myData));
-
-    if (result == 0) {
-      Serial.println("Sent with success");
-    } else {
-      Serial.print("Error sending the data. Result code: ");
-      Serial.println(result);  // Print the error code
+    if (!pumpManuallyOverridden) {  //Only send if not manually overridden
+      sendPumpMessage(2, "Turn OFF pump");
     }
     maxDistanceCount = 0;  // Reset counter after sending turn off message
-  }
-  else if (distance >= WATER_DISTANCE_TURN_ON_PUMP && distance < MAX_DISTANCE) {
-    // Send a message to another esp8266(mac address: 48:3F:DA:47:C4:28) using esp now that going to turn on pump after residing that message
-    myData.id = 1;  // ID to identify the message
-    myData.msg = "Turn ON pump";
-    uint8_t result = esp_now_send(broadcastAddress, (uint8_t *)&myData, sizeof(myData));
-
-    if (result == 0) {
-      Serial.println("Sent with success");
+  } else if (distance >= WATER_DISTANCE_TURN_ON_PUMP && distance < MAX_DISTANCE && !pumpManuallyOverridden) {
+    sendPumpMessage(1, "Turn ON pump");
+  } else if (distance <= WATER_DISTANCE_TURN_OFF_PUMP && !pumpManuallyOverridden) {
+    sendPumpMessage(2, "Turn OFF pump");
+  } else if (pumpManuallyOverridden) {
+    if (pumpManuallyOn) {
+      sendPumpMessage(1, "Turn ON pump");
+      Serial.println("Pump is manually Overridden sending turn on pump");
+      delay(1000);
     } else {
-      Serial.print("Error sending the data. Result code: ");
-      Serial.println(result);  // Print the error code
-    }
-  } else if (distance <= WATER_DISTANCE_TURN_OFF_PUMP) {
-    // Send a message to another esp8266(mac address: 48:3F:DA:47:C4:28) using esp now that going to turn off pump after residing that message
-    myData.id = 2;  // ID to identify the message
-    myData.msg = "Turn OFF pump";
-    uint8_t result = esp_now_send(broadcastAddress, (uint8_t *)&myData, sizeof(myData));
-
-    if (result == 0) {
-      Serial.println("Sent with success");
-    } else {
-      Serial.print("Error sending the data. Result code: ");
-      Serial.println(result);  // Print the error code
+      sendPumpMessage(2, "Turn OFF pump");
+      Serial.println("Pump is manually Overridden sending turn off pump");
+      delay(1000);
     }
   }
 
   // Wait for a short period
   delay(250);  // Reduced delay for faster readings
+}
+
+// Function to send pump message
+void sendPumpMessage(int id, String msg) {
+  myData.id = id;
+  myData.msg = msg;
+  uint8_t result = esp_now_send(broadcastAddress, (uint8_t *)&myData, sizeof(myData));
+
+  if (result == 0) {
+    Serial.println("Sent with success");
+  } else {
+    Serial.print("Error sending the data. Result code: ");
+    Serial.println(result);  // Print the error code
+  }
 }
